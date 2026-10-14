@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade 'pip>=26.2'
+          pip install -e "./gateway[dev]" -e ./tts-server
+      - name: Lint
+        run: ruff check gateway tts-server tests scripts
+      - name: Scan tracked files for secrets
+        run: git ls-files -z | xargs -0 detect-secrets-hook --no-verify
+      - name: Test
+        run: pytest -q
+      - name: Check shell scripts and Compose configuration
+        run: |
+          bash -n scripts/setup.sh scripts/run.sh deployment/sglang/build.sh deployment/sglang/serve.sh
+          docker compose config -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+      - name: Install mock gateway
+        run: pip install -e ./gateway
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Browser smoke test
+        working-directory: frontend
+        run: npm run test:browser
+
+  container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build application image
+        run: docker build -t voice-assistant-check .
+      - name: Verify packaged services without models
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/tests/container/smoke.py:/tmp/smoke.py:ro" \
+            voice-assistant-check python /tmp/smoke.py

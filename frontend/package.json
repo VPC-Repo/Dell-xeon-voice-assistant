@@ -1,0 +1,17 @@
+{
+  "name": "voice-assistant-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --minify --target=es2022 --outfile=dist/app.js && node stamp.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test",
+    "watch": "esbuild src/main.ts --bundle --target=es2022 --outfile=dist/app.js --watch"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Downloaded models and runtime artifacts
+models/
+third_party/
+run/
+deployment/sglang/.sglang-src/
+
+# OS / editor
+.DS_Store

@@ -1,0 +1,147 @@
+# Linux/Xeon deployment. Host networking keeps every service on loopback and
+# lets the gateway's WebRTC candidates reach the local TURN relay.
+name: dell-xeon-voice-assistant
+
+services:
+  models:
+    image: voice-assistant-app:local
+    build: .
+    pull_policy: build
+    command: ["python", "scripts/compose_models.py"]
+    volumes:
+      - models:/models
+      - runtime:/runtime
+    restart: "no"
+
+  sglang:
+    image: voice-assistant-sglang:local
+    build:
+      context: ./deployment/sglang
+      dockerfile: compose.Dockerfile
+    pull_policy: build
+    network_mode: host
+    shm_size: 32gb
+    # Keep the model on the first 64 physical cores and leave the rest, with
+    # every hyperthread sibling, to recognition, synthesis and the gateway.
+    # Measured on the XR8720t with ten people talking at once (2026-10-13):
+    # unpinned, each stream decoded at 4.8 tokens a second and the median
+    # answer was 7.2 s; pinned, 14.2 tokens a second and 3.0 s. Adjust the
+    # range to the host's physical core count minus eight.
+    cpuset: "0-63"
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - models:/models:ro
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    command:
+      - /opt/.venv/bin/python3
+      - -m
+      - sglang.launch_server
+      - --model-path
+      - /models/Qwen3-30B-A3B-Instruct-2507-FP8
+      - --served-model-name
+      - qwen3_30b_a3b
+      - --device
+      - cpu
+      - --quantization
+      - fp8
+      - --attention-backend
+      - intel_amx
+      - --max-running-requests
+      - "64"
+      - --context-length
+      - "8192"
+      - --chunked-prefill-size
+      - "4096"
+      - --max-total-tokens
+      - "65536"
+      - --mem-fraction-static
+      - "0.85"
+      - --disable-overlap-schedule
+      - --trust-remote-code
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8000"
+    healthcheck:
+      test: ["CMD", "/opt/.venv/bin/python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 90
+    restart: unless-stopped
+
+  tts:
+    image: voice-assistant-app:local
+    pull_policy: never
+    network_mode: host
+    volumes:
+      - models:/models:ro
+    environment:
+      TTS_BACKEND: kokoro
+      KOKORO_MODEL_DIR: /models/kokoro
+      TTS_BIND_HOST: 127.0.0.1
+      TTS_BIND_PORT: "8082"
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    command: ["tts-server"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  turn:
+    image: coturn/coturn:4.18.0-r0-alpine
+    network_mode: host
+    user: "0:0"
+    volumes:
+      - runtime:/runtime:ro
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    command: ["-c", "/runtime/turnserver.conf"]
+    restart: unless-stopped
+
+  gateway:
+    image: voice-assistant-app:local
+    pull_policy: never
+    network_mode: host
+    volumes:
+      - models:/models
+      - runtime:/runtime:ro
+      - ./prompts:/app/prompts:ro
+    environment:
+      BIND_HOST: 127.0.0.1
+      BIND_PORT: "8080"
+      FRONTEND_DIST: /app/frontend/dist
+      STT_MOONSHINE_V2_DIR: /models/moonshine-v2
+      # Concurrent session limit; also sizes the recognizer pool.
+      MAX_SESSIONS: "48"
+      LLM_BASE_URL: http://127.0.0.1:8000
+      TTS_BASE_URL: http://127.0.0.1:8082
+    depends_on:
+      models:
+        condition: service_completed_successfully
+      sglang:
+        condition: service_healthy
+      tts:
+        condition: service_healthy
+      turn:
+        condition: service_started
+    command: ["/bin/sh", "-c", "set -a; . /runtime/turn.env; set +a; exec voice-gateway"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  models:
+  runtime:
